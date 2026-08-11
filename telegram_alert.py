@@ -93,11 +93,26 @@ def enviar_telegram(mensaje):
 
 
 def main():
+    from datetime import datetime, timezone
+
     supabase = get_supabase()
 
     actual_ts, anterior_ts = fetch_last_two_runs(supabase)
-    if not actual_ts or not anterior_ts:
-        logging.info("Aún no hay dos ejecuciones guardadas para comparar. Nada que hacer todavía.")
+
+    if not actual_ts:
+        logging.info("Todavía no hay ninguna ejecución guardada.")
+        return
+
+    # Contamos cuántos jugadores se actualizaron en esta ejecución, para
+    # que el mensaje de estado tenga algo de contexto útil.
+    total_jugadores = len(fetch_prices_at(supabase, actual_ts))
+    hora = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
+
+    lineas = [f"🔄 <b>Mercado actualizado</b> — {hora}", f"{total_jugadores} jugadores procesados."]
+
+    if not anterior_ts:
+        lineas.append("\n<i>(Es la primera ejecución guardada, aún no hay nada con qué comparar precios.)</i>")
+        enviar_telegram("\n".join(lineas))
         return
 
     precios_actuales = fetch_prices_at(supabase, actual_ts)
@@ -115,7 +130,8 @@ def main():
             movimientos.append((player_id, precio_anterior, precio_actual, diff_pct))
 
     if not movimientos:
-        logging.info("Sin movimientos relevantes en esta comparación.")
+        lineas.append("\nSin movimientos de precio relevantes (≥3%) desde la ejecución anterior.")
+        enviar_telegram("\n".join(lineas))
         return
 
     nombres = fetch_player_names(supabase, [m[0] for m in movimientos])
@@ -123,14 +139,16 @@ def main():
     # Si hay lista de seguimiento, filtramos por nombre
     if nombres_filtro:
         movimientos = [m for m in movimientos if nombres.get(m[0], "").lower().split(" (")[0] in nombres_filtro]
-        if not movimientos:
-            logging.info("Sin movimientos relevantes entre los jugadores de tu lista de seguimiento.")
-            return
+
+    if not movimientos:
+        lineas.append("\nSin movimientos relevantes entre los jugadores de tu lista de seguimiento.")
+        enviar_telegram("\n".join(lineas))
+        return
 
     movimientos.sort(key=lambda m: abs(m[3]), reverse=True)
     movimientos = movimientos[:MAX_JUGADORES_POR_MENSAJE]
 
-    lineas = ["<b>📊 Movimientos de mercado</b>", ""]
+    lineas.append("\n<b>📊 Movimientos de precio:</b>")
     for player_id, antes, ahora, diff_pct in movimientos:
         nombre = nombres.get(player_id, player_id)
         icono = "🟢" if diff_pct > 0 else "🔴"
