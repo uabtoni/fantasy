@@ -122,9 +122,40 @@ def fetch_all_market_data():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(user_agent=HEADERS["User-Agent"])
 
+        # No necesitamos que las imágenes/fuentes/CSS de fondo lleguen a
+        # descargarse de verdad (solo leemos la URL en el atributo src del
+        # HTML), así que las bloqueamos: en un runner de GitHub Actions
+        # (datacenter) estos recursos pueden ir mucho más lentos que desde
+        # una conexión doméstica y son la causa más probable de que
+        # "wait_until=load" se quedara colgado hasta el timeout.
+        page.route(
+            re.compile(r"\.(png|jpg|jpeg|gif|svg|webp|woff2?|ttf)(\?.*)?$", re.IGNORECASE),
+            lambda route: route.abort()
+        )
+
         logging.info(f"Cargando {MERCADO_URL} con navegador headless...")
-        page.goto(MERCADO_URL, timeout=60000, wait_until="load")
-        page.wait_for_timeout(4000)
+
+        cargado = False
+        ultimo_error = None
+        for intento in range(1, 4):
+            try:
+                # domcontentloaded en vez de load: no esperamos anuncios,
+                # analíticas ni recursos de terceros, solo el HTML/JS base.
+                page.goto(MERCADO_URL, timeout=45000, wait_until="domcontentloaded")
+                page.wait_for_selector("tr.elemento_jugador", timeout=30000)
+                cargado = True
+                break
+            except Exception as e:
+                ultimo_error = e
+                logging.warning(f"Intento {intento}/3 fallido al cargar la tabla de mercado: {e}")
+                page.wait_for_timeout(5000 * intento)  # backoff antes de reintentar
+
+        if not cargado:
+            logging.error(f"No se pudo cargar la tabla de mercado tras 3 intentos: {ultimo_error}")
+            browser.close()
+            return []
+
+        page.wait_for_timeout(2000)
 
         # El banner de cookies no bloquea los datos (ya están en el DOM
         # aunque el banner tape la pantalla), pero lo cerramos por si
@@ -139,13 +170,6 @@ def fetch_all_market_data():
                     break
             except Exception:
                 continue
-
-        try:
-            page.wait_for_selector("tr.elemento_jugador", timeout=15000)
-        except Exception as e:
-            logging.error(f"La tabla de mercado no llegó a aparecer: {e}")
-            browser.close()
-            return []
 
         pagina = 1
         while True:
@@ -290,8 +314,8 @@ def scrape_all_data():
 
 
 def update_database(players_list):
-    SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://jcfzocfbgidbdwatiisr.supabase.co")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjZnpvY2ZiZ2lkYmR3YXRpaXNyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjM5NzY3NywiZXhwIjoyMTAxOTczNjc3fQ.zb1wfhkJHksCZhW_Y3-ywX0HsOiWY2URiWbB_mBlafM")
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         logging.warning("SUPABASE_URL / SUPABASE_KEY no configuradas como variables de entorno. "
