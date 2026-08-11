@@ -42,6 +42,7 @@ HEADERS = {
 }
 
 POSICIONES_VALIDAS = {"Portero", "Defensa", "Mediocampista", "Delantero"}
+STORAGE_BUCKET = "player-photos"
 
 
 def normalizar(texto):
@@ -313,6 +314,40 @@ def scrape_all_data():
     return all_players
 
 
+def subir_foto_a_storage(supabase, player_id, foto_url):
+    """
+    Descarga la foto desde futbolfantasy.com (con nuestro propio scraper,
+    que sí tiene un Referer legítimo de su propio dominio) y la vuelve a
+    subir a nuestro bucket de Supabase Storage. Así, cuando el navegador
+    del usuario pida la imagen, la pide a Supabase (nuestro dominio),
+    nunca directamente a futbolfantasy.com -- evitando cualquier
+    protección anti-hotlink de su CDN.
+
+    Devuelve la URL pública en Supabase, o None si algo falla (en cuyo
+    caso se deja el campo de foto vacío en vez de romper el resto).
+    """
+    if not foto_url:
+        return None
+    try:
+        headers_img = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Referer": BASE_URL + "/",
+        }
+        resp = requests.get(foto_url, headers=headers_img, timeout=15)
+        resp.raise_for_status()
+
+        path = f"{player_id}.png"
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            path,
+            resp.content,
+            {"content-type": "image/png", "upsert": "true"},
+        )
+        return supabase.storage.from_(STORAGE_BUCKET).get_public_url(path)
+    except Exception as e:
+        logging.debug(f"No se pudo subir la foto de {player_id}: {e}")
+        return None
+
+
 def update_database(players_list):
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
@@ -324,6 +359,17 @@ def update_database(players_list):
 
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+        logging.info("Descargando y subiendo fotos de jugadores a Supabase Storage...")
+        subidas_ok = 0
+        for i, player in enumerate(players_list, start=1):
+            nueva_url = subir_foto_a_storage(supabase, player["id"], player.get("photo_url"))
+            if nueva_url:
+                player["photo_url"] = nueva_url
+                subidas_ok += 1
+            if i % 50 == 0:
+                logging.info(f"Fotos procesadas: {i}/{len(players_list)}")
+        logging.info(f"Fotos subidas correctamente: {subidas_ok}/{len(players_list)}")
 
         logging.info("Subiendo jugadores a Supabase...")
         for player in players_list:
