@@ -2,10 +2,12 @@ name: Scraper Fantasy (cada 4h)
 
 on:
   schedule:
-    # Cron en UTC. "0 */4 * * *" = a las 00:00, 04:00, 08:00, 12:00,
-    # 16:00 y 20:00 UTC. Ajusta si quieres que coincida con otra franja
-    # horaria concreta (España está en UTC+1 en invierno, UTC+2 en verano).
-    - cron: '0 */4 * * *'
+    # Cron en UTC. "7 */4 * * *" = a las 00:07, 04:07, 08:07, 12:07,
+    # 16:07 y 20:07 UTC. Se dispara en el minuto 7 (no en punto) a
+    # propósito: GitHub avisa de que los workflows programados pueden
+    # retrasarse mucho más si se lanzan justo al inicio de cada hora,
+    # que es cuando más carga tienen sus servidores.
+    - cron: '7 */4 * * *'
   # Te permite también lanzarlo a mano desde la pestaña "Actions" de GitHub,
   # útil para probar sin esperar a la siguiente ejecución programada.
   workflow_dispatch:
