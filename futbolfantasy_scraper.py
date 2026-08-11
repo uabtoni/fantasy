@@ -123,17 +123,6 @@ def fetch_all_market_data():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(user_agent=HEADERS["User-Agent"])
 
-        # No necesitamos que las imágenes/fuentes/CSS de fondo lleguen a
-        # descargarse de verdad (solo leemos la URL en el atributo src del
-        # HTML), así que las bloqueamos: en un runner de GitHub Actions
-        # (datacenter) estos recursos pueden ir mucho más lentos que desde
-        # una conexión doméstica y son la causa más probable de que
-        # "wait_until=load" se quedara colgado hasta el timeout.
-        page.route(
-            re.compile(r"\.(png|jpg|jpeg|gif|svg|webp|woff2?|ttf)(\?.*)?$", re.IGNORECASE),
-            lambda route: route.abort()
-        )
-
         logging.info(f"Cargando {MERCADO_URL} con navegador headless...")
 
         cargado = False
