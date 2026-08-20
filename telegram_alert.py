@@ -17,7 +17,11 @@ programada, así siempre compara "esta ejecución" con "la anterior".
 """
 
 import os
+import html
 import logging
+from collections import Counter
+from datetime import datetime, timezone
+
 import requests
 from supabase import create_client, Client
 
@@ -25,6 +29,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 UMBRAL_PORCENTAJE = 3.0   # solo avisa de movimientos >= 3% (sube o baja)
 MAX_JUGADORES_POR_MENSAJE = 12
+DASHBOARD_URL = "https://uabtoni.github.io/fantasy-dashboard/"
+MEDALLAS = ["🥇", "🥈", "🥉"]
 
 # Si quieres que solo te avise de jugadores concretos (tu equipo,
 # favoritos...), pon aquí sus nombres exactos tal y como salen en la
@@ -71,6 +77,15 @@ def fetch_player_names(supabase, player_ids):
     return {r['id']: f'{r["name"]} ({r["team"]})' for r in resp.data}
 
 
+def fetch_status_counts(supabase):
+    """Foto rápida del estado físico de la plantilla AHORA MISMO (no es
+    histórico, es el estado actual guardado en `players`) -- da contexto
+    útil sin tener que abrir el dashboard."""
+    resp = supabase.table('players').select('status').execute()
+    conteo = Counter(r['status'] for r in resp.data if r.get('status'))
+    return conteo.get('Lesionado', 0), conteo.get('Duda', 0)
+
+
 def enviar_telegram(mensaje):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -92,9 +107,11 @@ def enviar_telegram(mensaje):
         logging.info("Alerta enviada por Telegram.")
 
 
-def main():
-    from datetime import datetime, timezone
+def formatear_precio(valor):
+    return f"{valor:,.0f}€".replace(",", ".")
 
+
+def main():
     supabase = get_supabase()
 
     actual_ts, anterior_ts = fetch_last_two_runs(supabase)
@@ -103,21 +120,25 @@ def main():
         logging.info("Todavía no hay ninguna ejecución guardada.")
         return
 
-    # Contamos cuántos jugadores se actualizaron en esta ejecución, para
-    # que el mensaje de estado tenga algo de contexto útil.
-    total_jugadores = len(fetch_prices_at(supabase, actual_ts))
-    hora = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
+    precios_actuales = fetch_prices_at(supabase, actual_ts)
+    total_jugadores = len(precios_actuales)
+    lesionados, dudas = fetch_status_counts(supabase)
+    hora = datetime.now(timezone.utc).strftime("%d/%m/%Y · %H:%M UTC")
 
-    lineas = [f"🔄 <b>Mercado actualizado</b> — {hora}", f"{total_jugadores} jugadores procesados."]
+    lineas = [
+        "🏟️ <b>MERCADO ACTUALIZADO</b> — LaLiga Fantasy",
+        f"🕒 {hora}",
+        "",
+        f"👥 <b>{total_jugadores}</b> jugadores procesados",
+        f"🤕 {lesionados} lesionados   ·   ⚠️ {dudas} en duda",
+    ]
 
     if not anterior_ts:
-        lineas.append("\n<i>(Es la primera ejecución guardada, aún no hay nada con qué comparar precios.)</i>")
+        lineas += ["", "🆕 <i>Primera ejecución guardada — todavía no hay nada con qué comparar precios.</i>"]
         enviar_telegram("\n".join(lineas))
         return
 
-    precios_actuales = fetch_prices_at(supabase, actual_ts)
     precios_anteriores = fetch_prices_at(supabase, anterior_ts)
-
     nombres_filtro = {n.lower() for n in LISTA_SEGUIMIENTO}
 
     movimientos = []
@@ -129,33 +150,44 @@ def main():
         if abs(diff_pct) >= UMBRAL_PORCENTAJE:
             movimientos.append((player_id, precio_anterior, precio_actual, diff_pct))
 
-    if not movimientos:
-        lineas.append("\nSin movimientos de precio relevantes (≥3%) desde la ejecución anterior.")
-        enviar_telegram("\n".join(lineas))
-        return
-
-    nombres = fetch_player_names(supabase, [m[0] for m in movimientos])
+    nombres = fetch_player_names(supabase, [m[0] for m in movimientos]) if movimientos else {}
 
     # Si hay lista de seguimiento, filtramos por nombre
-    if nombres_filtro:
+    filtrando_seguimiento = bool(nombres_filtro)
+    if filtrando_seguimiento:
         movimientos = [m for m in movimientos if nombres.get(m[0], "").lower().split(" (")[0] in nombres_filtro]
 
+    lineas.append("")
     if not movimientos:
-        lineas.append("\nSin movimientos relevantes entre los jugadores de tu lista de seguimiento.")
-        enviar_telegram("\n".join(lineas))
-        return
+        if filtrando_seguimiento:
+            lineas.append("😴 Sin movimientos relevantes entre los jugadores de tu lista de seguimiento.")
+        else:
+            lineas.append(f"😴 Sin movimientos de precio relevantes (≥{UMBRAL_PORCENTAJE:.0f}%) desde la última actualización.")
+    else:
+        movimientos.sort(key=lambda m: abs(m[3]), reverse=True)
+        subidas = sum(1 for m in movimientos if m[3] > 0)
+        bajadas = sum(1 for m in movimientos if m[3] < 0)
 
-    movimientos.sort(key=lambda m: abs(m[3]), reverse=True)
-    movimientos = movimientos[:MAX_JUGADORES_POR_MENSAJE]
+        lineas.append(f"📊 <b>Movimientos de precio</b> (≥{UMBRAL_PORCENTAJE:.0f}%)")
+        lineas.append(f"📈 {subidas} suben   ·   📉 {bajadas} bajan")
+        lineas.append("")
 
-    lineas.append("\n<b>📊 Movimientos de precio:</b>")
-    for player_id, antes, ahora, diff_pct in movimientos:
-        nombre = nombres.get(player_id, player_id)
-        icono = "🟢" if diff_pct > 0 else "🔴"
-        signo = "+" if diff_pct > 0 else ""
-        lineas.append(
-            f"{icono} <b>{nombre}</b>: {antes:,.0f}€ → {ahora:,.0f}€ ({signo}{diff_pct:.1f}%)".replace(",", ".")
-        )
+        visibles = movimientos[:MAX_JUGADORES_POR_MENSAJE]
+        for i, (player_id, antes, ahora, diff_pct) in enumerate(visibles):
+            nombre = html.escape(nombres.get(player_id, player_id))
+            rango = MEDALLAS[i] if i < len(MEDALLAS) else "▪️"
+            icono = "🟢" if diff_pct > 0 else "🔴"
+            signo = "+" if diff_pct > 0 else ""
+            lineas.append(f"{rango} <b>{nombre}</b>")
+            lineas.append(f"     {formatear_precio(antes)} → {formatear_precio(ahora)}   {icono} {signo}{diff_pct:.1f}%")
+
+        restantes = len(movimientos) - len(visibles)
+        if restantes > 0:
+            lineas.append("")
+            lineas.append(f"<i>… y {restantes} jugador{'es' if restantes != 1 else ''} más con movimientos relevantes.</i>")
+
+    lineas.append("")
+    lineas.append(f'🔗 <a href="{DASHBOARD_URL}">Ver mercado completo en el dashboard</a>')
 
     enviar_telegram("\n".join(lineas))
 
