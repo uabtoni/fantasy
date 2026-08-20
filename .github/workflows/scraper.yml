@@ -49,3 +49,18 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python telegram_alert.py
+
+      # Solo se ejecuta si algún paso anterior ha fallado (scraper o envío
+      # de alertas) -- así, un fallo silencioso en el runner de GitHub no
+      # pasa desapercibido: te llega un aviso en vez de un mercado
+      # desactualizado sin que nadie se entere.
+      - name: Avisar por Telegram si algo ha fallado
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d text="⚠️ <b>Falló la ejecución del scraper</b> — revisa los logs en GitHub Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

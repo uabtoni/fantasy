@@ -26,6 +26,7 @@ import logging
 import os
 import unicodedata
 from collections import Counter
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
@@ -499,10 +500,10 @@ def subir_foto_a_storage(supabase, player_id, foto_url):
 
 
 def update_database(players_list):
-    SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://jcfzocfbgidbdwatiisr.supabase.co")
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     # El workflow de GitHub Actions (y .env.example) usan SUPABASE_SERVICE_ROLE_KEY;
     # se mantiene SUPABASE_KEY como alias por compatibilidad con configuraciones locales.
-    SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjZnpvY2ZiZ2lkYmR3YXRpaXNyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjM5NzY3NywiZXhwIjoyMTAxOTczNjc3fQ.zb1wfhkJHksCZhW_Y3-ywX0HsOiWY2URiWbB_mBlafM")
+    SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY", "")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         logging.warning("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY no configuradas como variables de entorno. "
@@ -543,9 +544,19 @@ def update_database(players_list):
         # Histórico de precios: una fila nueva por jugador en cada
         # ejecución (no se sobrescribe nada), para poder pintar la
         # evolución del precio más adelante.
+        #
+        # recorded_at se genera UNA vez aquí, en Python, y se manda igual
+        # en las 4 tandas de INSERT de abajo -- si dejáramos que cada
+        # tanda usara el now() por defecto de la base de datos, cada una
+        # recibiría un timestamp de microsegundos distinto, y entonces
+        # telegram_alert.py (que agrupa por recorded_at para encontrar
+        # "la ejecución anterior") acabaría comparando dos tandas de esta
+        # misma ejecución entre sí en vez de esta ejecución contra la de
+        # hace 4 horas.
         logging.info("Guardando histórico de precios...")
+        run_timestamp = datetime.now(timezone.utc).isoformat()
         historial = [
-            {"player_id": p["id"], "price": p["price"]}
+            {"player_id": p["id"], "price": p["price"], "recorded_at": run_timestamp}
             for p in players_list if p["price"] and p["price"] > 0
         ]
         # Insertamos en bloques para no exceder límites de tamaño de payload
