@@ -41,14 +41,20 @@ jobs:
         run: |
           python futbolfantasy_scraper.py
 
-      - name: Enviar alertas de Telegram
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python telegram_alert.py
+      # Desactivado a peticion del usuario (23/08/2026): el aviso de +-3% de
+      # precio generaba demasiado ruido. Los avisos de Telegram ahora son
+      # los movimientos del historial de la liga privada (fichajes, ventas,
+      # cláusulas...), ver liga-sync.yml -> sync_league_activity.py. El
+      # script telegram_alert.py se queda en el repo por si se quiere
+      # reactivar mas adelante -- basta con descomentar este paso.
+      # - name: Enviar alertas de Telegram
+      #   env:
+      #     SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      #     SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      #     TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      #     TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      #   run: |
+      #     python telegram_alert.py
 
       # Solo se ejecuta si algún paso anterior ha fallado (scraper o envío
       # de alertas) -- así, un fallo silencioso en el runner de GitHub no

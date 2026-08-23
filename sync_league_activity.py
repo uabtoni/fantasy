@@ -35,26 +35,136 @@ Uso:
     python sync_league_activity.py --starting-budget 100000000  # por defecto
     python sync_league_activity.py --full                       # ignora lo ya sincronizado y re-descarga todo (hasta --max-pages)
 
+Ademas, si hay eventos NUEVOS desde la ultima pasada, manda un aviso por
+Telegram con TODOS ellos (fichajes, ventas, cláusulas, blindajes, ganancias
+por jornada, altas de manager...) -- no filtra por importe ni tipo, a
+diferencia de telegram_alert.py (que solo avisa de +-3% de precio en el
+mercado publico y esta desactivado en el workflow por peticion del usuario,
+ver .github/workflows/scraper.yml). Si no hay eventos nuevos, no manda nada
+(no hace spam en cada pasada de 4h).
+
 Variables de entorno necesarias (o en scraper/.env -- ver .env.example):
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
+    TELEGRAM_BOT_TOKEN     (opcional -- sin esto, los avisos solo se imprimen por consola)
+    TELEGRAM_CHAT_ID       (opcional)
 """
 
 import argparse
+import html
 import logging
 import os
 import sys
 
+import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 from laliga_auth import get_valid_access_token
-from league_data import get_my_league_id, get_standing, get_league_activity, compute_manager_finances
+from league_data import get_my_league_id, get_standing, get_league_activity, get_all_players, compute_manager_finances, ACTIVITY_TYPE_LABELS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 UPSERT_BLOQUE = 200
 MAX_PAGES_DEFAULT = 200  # tope de seguridad para no entrar en bucle infinito si la API cambia de forma
+MAX_MOVIMIENTOS_POR_MENSAJE = 25  # limite de Telegram es ~4096 caracteres por mensaje
+DASHBOARD_URL = "https://uabtoni.github.io/fantasy-dashboard/"
+
+# Emoji por activityTypeId, para que el mensaje se lea de un vistazo.
+ACTIVITY_EMOJI = {1: "🤝", 4: "🛡️", 6: "💶", 7: "🟥", 9: "🆕", 31: "🛒", 32: "🔒", 33: "💰"}
+
+
+def _fmt_money(n):
+    return f"{n:,.0f}€".replace(",", ".") if n else "€0"
+
+
+def format_movimiento(item, managers_by_id, players_by_id):
+    """Una linea legible (HTML de Telegram) para un item del historial."""
+    t = item.get("activityTypeId")
+    u1 = html.escape(managers_by_id.get(str(item.get("user1Id")), f"manager {item.get('user1Id')}"))
+    u2_id = item.get("user2Id")
+    u2 = html.escape(managers_by_id.get(str(u2_id), "")) if u2_id else None
+    pid = str(item.get("playerMasterId") or item.get("playerId") or "")
+    jugador = players_by_id.get(pid) if pid else None
+    jugador = html.escape(jugador) if jugador else None
+    amount = item.get("amount")
+    emoji = ACTIVITY_EMOJI.get(t, "🔁")
+
+    if t == 6:
+        return f"{emoji} <b>{u1}</b> ganó {_fmt_money(amount)} en la jornada {item.get('weekNumber', '?')}"
+    if t == 7:
+        return f"{emoji} <b>{u1}</b> no puntuó por alineación incorrecta (jornada {item.get('weekNumber', '?')})"
+    if t == 9:
+        return f"{emoji} <b>{u1}</b> se unió a la liga"
+
+    verbo = ACTIVITY_TYPE_LABELS.get(t, f"hizo un movimiento sin catalogar (tipo {t})")
+    jugador_txt = f" a <b>{jugador}</b>" if jugador else ""
+    precio_txt = f" por {_fmt_money(amount)}" if amount else ""
+    # user2 solo aparece en operaciones directas (tipo 1/32) -- es la otra
+    # parte de la transaccion (vendedor si u1 compra, comprador si u1 vende).
+    contraparte_txt = f" (con {u2})" if u2 else ""
+    return f"{emoji} <b>{u1}</b> {verbo}{jugador_txt}{precio_txt}{contraparte_txt}"
+
+
+def enviar_telegram(mensaje):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        logging.warning("Faltan TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID. No se envía nada, solo se imprime:")
+        try:
+            print(mensaje)
+        except UnicodeEncodeError:
+            # Consola local en Windows (cp1252) que no sabe pintar emojis --
+            # no afecta al envio real por Telegram (siempre UTF-8 por HTTP).
+            print(mensaje.encode("ascii", "replace").decode("ascii"))
+        return
+    resp = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data={"chat_id": chat_id, "text": mensaje, "parse_mode": "HTML", "disable_web_page_preview": True},
+    )
+    if resp.status_code != 200:
+        logging.error(f"Error al enviar a Telegram: {resp.status_code} {resp.text}")
+    else:
+        logging.info("Aviso de movimientos enviado por Telegram.")
+
+
+def avisar_movimientos_nuevos(nuevos, standing, all_players):
+    """Manda UN mensaje de Telegram con todos los eventos nuevos de esta
+    pasada (mas antiguo primero, para que se lea como una linea de tiempo).
+    No manda nada si `nuevos` esta vacio."""
+    if not nuevos:
+        return
+
+    managers_by_id = {}
+    for entry in standing:
+        team = entry.get("team", {}) or {}
+        manager = team.get("manager") or {}
+        if manager.get("id"):
+            managers_by_id[str(manager["id"])] = manager.get("managerName", "?")
+
+    players_by_id = {}
+    for p in all_players:
+        pm = p.get("playerMaster") if isinstance(p.get("playerMaster"), dict) else p
+        pid = pm.get("id")
+        if pid:
+            players_by_id[str(pid)] = pm.get("nickname") or pm.get("name")
+
+    ordenados = sorted(nuevos, key=lambda it: it.get("createdAt") or it.get("timestamp") or "")
+
+    lineas = [f"📋 <b>{len(ordenados)} movimiento{'s' if len(ordenados) != 1 else ''} nuevo{'s' if len(ordenados) != 1 else ''} en tu liga</b>", ""]
+    visibles = ordenados[:MAX_MOVIMIENTOS_POR_MENSAJE]
+    for it in visibles:
+        lineas.append(format_movimiento(it, managers_by_id, players_by_id))
+
+    restantes = len(ordenados) - len(visibles)
+    if restantes > 0:
+        lineas.append("")
+        lineas.append(f"<i>… y {restantes} movimiento{'s' if restantes != 1 else ''} más.</i>")
+
+    lineas.append("")
+    lineas.append(f'🔗 <a href="{DASHBOARD_URL}">Ver detalle en el dashboard</a>')
+
+    enviar_telegram("\n".join(lineas))
 
 
 def to_activity_row(league_id, item):
@@ -108,6 +218,8 @@ def sync(league_id=None, starting_budget=100_000_000, max_pages=MAX_PAGES_DEFAUL
     real_league_id, league_name = get_my_league_id(token, forced_id=league_id)
     logging.info(f"Sincronizando historial de la liga {real_league_id} ({league_name})...")
 
+    standing = get_standing(token, real_league_id)  # se reusa para el aviso de Telegram y para las finanzas
+
     existing = supabase.table("league_activity").select("id").eq("league_id", str(real_league_id)).execute()
     known_ids = {row["id"] for row in existing.data} if not full else set()
     logging.info(f"{len(known_ids)} eventos ya sincronizados previamente." if not full else "Modo --full: re-descargando todo el historial disponible.")
@@ -120,6 +232,13 @@ def sync(league_id=None, starting_budget=100_000_000, max_pages=MAX_PAGES_DEFAUL
         for i in range(0, len(rows), UPSERT_BLOQUE):
             supabase.table("league_activity").upsert(rows[i:i + UPSERT_BLOQUE]).execute()
 
+        # Solo se pide el catalogo completo de jugadores (~800, para resolver
+        # nombres aunque ya no esten en ninguna plantilla actual) cuando hay
+        # algo nuevo que avisar -- se ahorra la llamada en las pasadas donde
+        # no ha pasado nada (la mayoria).
+        all_players = get_all_players(token)
+        avisar_movimientos_nuevos(nuevos, standing, all_players)
+
     # Recalcula las finanzas con TODO el historial acumulado en Supabase (no
     # solo lo descargado en esta pasada), para que el estimado no dependa de
     # cuantas paginas se hayan traido hoy.
@@ -127,7 +246,6 @@ def sync(league_id=None, starting_budget=100_000_000, max_pages=MAX_PAGES_DEFAUL
     activity_completa = [row["raw"] for row in todo.data]
     logging.info(f"Recalculando finanzas con {len(activity_completa)} eventos en total (saldo inicial asumido: €{starting_budget:,})...")
 
-    standing = get_standing(token, real_league_id)
     finanzas = compute_manager_finances(activity_completa, standing, starting_budget=starting_budget)
 
     no_plausibles = [f for f in finanzas if not f["is_plausible"]]

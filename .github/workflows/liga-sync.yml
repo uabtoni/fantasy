@@ -49,10 +49,17 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python sync_league_roster.py
 
-      - name: Sincronizar historial y finanzas de la liga
+      # Ademas de sincronizar, manda un aviso por Telegram con TODOS los
+      # movimientos nuevos del historial (fichajes, ventas, cláusulas,
+      # blindajes, ganancias por jornada, altas de manager...) -- sin
+      # filtrar por importe ni tipo, a peticion del usuario (23/08/2026).
+      # Si no hay movimientos nuevos desde la pasada anterior, no manda nada.
+      - name: Sincronizar historial y finanzas de la liga (+ aviso de movimientos por Telegram)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python sync_league_activity.py
 
       - name: Avisar por Telegram si algo ha fallado

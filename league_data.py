@@ -28,6 +28,22 @@ import unicodedata
 import requests
 
 BASE = "https://fantasy-api.llt-services.com/api/v1/competition/1"
+
+# Verbos legibles por activityTypeId del historial de actividad (ver
+# get_league_activity). El 1 y el 32 son operaciones DIRECTAS entre dos
+# managers (traen user2Id); el 31 y el 33 son contra el mercado/IA (no hay
+# contraparte). Confirmado con datos reales -- ver conversacion /
+# test_league_history.py.
+ACTIVITY_TYPE_LABELS = {
+    1: "compró (oferta directa)",
+    4: "blindó",
+    6: "ganó por jornada",
+    7: "no puntuó (alineación incorrecta)",
+    9: "se unió a la liga",
+    31: "fichó (mercado)",
+    32: "clausuló",
+    33: "vendió (mercado)",
+}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 DELAY_BETWEEN_TEAMS = 0.3  # segundos entre peticion y peticion, para no disparar rate limits
 
