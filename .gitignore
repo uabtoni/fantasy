@@ -3,3 +3,15 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Tokens de sesion de LaLiga Fantasy (secretos, generados por laliga_auth.py).
+# En GitHub Actions se generan en runtime desde el secret LALIGA_TOKENS_JSON,
+# nunca se commitean.
+laliga_tokens.json
+paste_token.txt
+
+# Muestras de respuestas de la API, generadas por los scripts test_*.py /
+# sync_*.py -- son datos de una liga privada concreta, no hace falta
+# versionarlos.
+*_sample.json
+history_full.json
